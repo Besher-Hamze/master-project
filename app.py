@@ -190,17 +190,23 @@ BLACKLISTED_IPS = set()   # تضاف تلقائياً لما الـ ML يكتش�
 
 class IPBlocker:
     def __init__(self):
-        self.blocked: set[str] = set()
+        self.blocked_until: dict[str, float] = {}
 
     def is_blocked(self, ip: str) -> bool:
-        return ip in self.blocked
+        expires_at = self.blocked_until.get(ip)
+        if expires_at is None:
+            return False
+        if time.time() >= expires_at:
+            self.blocked_until.pop(ip, None)
+            return False
+        return True
 
-    def block(self, ip: str):
-        self.blocked.add(ip)
-        print(f"[BLACKLIST] {ip} added to blacklist")
+    def block(self, ip: str, duration_seconds: int = 30):
+        self.blocked_until[ip] = time.time() + duration_seconds
+        print(f"[BLACKLIST] {ip} blocked for {duration_seconds}s")
 
     def unblock(self, ip: str):
-        self.blocked.discard(ip)
+        self.blocked_until.pop(ip, None)
 
 ip_blocker = IPBlocker()
 
@@ -329,7 +335,13 @@ def api_status():
 
 @app.get("/api/admin/blacklist")
 def get_blacklist():
-    return jsonify({"blocked_ips": list(ip_blocker.blocked)})
+    now = time.time()
+    active_blocks = {
+        ip: max(0, round(expires_at - now, 1))
+        for ip, expires_at in ip_blocker.blocked_until.items()
+        if expires_at > now
+    }
+    return jsonify({"blocked_ips": active_blocks})
 
 @app.delete("/api/admin/blacklist/<ip>")
 def unblock_ip(ip):
