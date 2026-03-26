@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NIDS Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #0a0c0f;
+    --surface:  #111318;
+    --border:   #1e2128;
+    --border2:  #252a35;
+    --text:     #c8cdd8;
+    --muted:    #4a5168;
+    --green:    #22c55e;
+    --green-bg: #0d2018;
+    --red:      #ef4444;
+    --red-bg:   #1f0808;
+    --amber:    #f59e0b;
+    --blue:     #60a5fa;
+    --mono:     'JetBrains Mono', monospace;
+    --sans:     'Syne', sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 13px; min-height: 100vh; padding: 22px; }
+
+  /* Header */
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .logo  { display: flex; align-items: center; gap: 12px; }
+  .shield { width: 38px; height: 38px; border-radius: 9px; background: var(--green-bg); border: 1px solid rgba(34,197,94,0.4); display: flex; align-items: center; justify-content: center; }
+  .shield svg { width: 20px; height: 20px; stroke: var(--green); fill: none; stroke-width: 2; }
+  .brand-title { font-family: var(--sans); font-size: 17px; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+  .brand-sub   { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .live-badge  { display: flex; align-items: center; gap: 6px; background: var(--green-bg); border: 1px solid rgba(34,197,94,0.35); border-radius: 99px; padding: 4px 13px; font-size: 11px; color: var(--green); font-weight: 700; letter-spacing: 0.07em; }
+  .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: blink 1.4s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+  /* Stats */
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-bottom: 16px; }
+  .stat  { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .stat-label { font-size: 10px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; }
+  .stat-value { font-family: var(--sans); font-size: 26px; font-weight: 800; color: #fff; }
+  .stat-value.green { color: var(--green); }
+  .stat-value.red   { color: var(--red); }
+  .stat-value.amber { color: var(--amber); }
+
+  /* Layout */
+  .main { display: grid; grid-template-columns: 1fr 320px; gap: 14px; }
+
+  /* Panel */
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .panel-title  { font-size: 10px; color: var(--muted); letter-spacing: 0.09em; text-transform: uppercase; font-weight: 700; }
+
+  /* Log */
+  #log-list { list-style: none; max-height: 500px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
+  .log-item {
+    display: grid; grid-template-columns: 62px 120px 55px 1fr 55px auto;
+    gap: 8px; align-items: center;
+    padding: 9px 16px; border-bottom: 1px solid var(--border);
+    font-size: 12px; animation: fadeSlide 0.2s ease;
+  }
+  @keyframes fadeSlide { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:none} }
+  .log-item:last-child { border-bottom: none; }
+  .log-item.attack { background: rgba(239,68,68,0.04); }
+
+  .log-time   { color: var(--muted); font-size: 11px; }
+  .log-ip     { color: var(--text); font-size: 11px; }
+  .log-method { color: var(--blue); font-size: 11px; }
+  .log-path   { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+  .log-count  { color: var(--amber); font-size: 11px; text-align: right; }
+
+  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 99px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; white-space: nowrap; }
+  .badge.normal { background: var(--green-bg); color: var(--green); border: 1px solid rgba(34,197,94,0.25); }
+  .badge.attack { background: var(--red-bg); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+  .badge-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+  .empty-state { padding: 48px 18px; text-align: center; color: var(--muted); }
+  .empty-icon  { font-size: 24px; margin-bottom: 10px; opacity: 0.3; }
+
+  /* Right */
+  .right-col { display: flex; flex-direction: column; gap: 14px; }
+
+  /* Decision */
+  .decision-body { padding: 16px; }
+  .decision-label { font-family: var(--sans); font-size: 30px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 2px; }
+  .decision-label.normal { color: var(--green); }
+  .decision-label.attack { color: var(--red); animation: alertPulse 0.4s ease; }
+  @keyframes alertPulse { 0%{opacity:0.3;transform:scale(0.95)} 60%{transform:scale(1.03)} 100%{opacity:1;transform:scale(1)} }
+  .decision-sub  { font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+  .bar-wrap  { height: 5px; background: var(--border2); border-radius: 3px; overflow: hidden; margin-bottom: 4px; }
+  .bar-fill  { height: 100%; border-radius: 3px; transition: width 0.5s cubic-bezier(.4,0,.2,1), background 0.3s; }
+  .bar-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 12px; }
+  .bar-pct   { color: #fff; font-weight: 700; }
+
+  .meta { border-top: 1px solid var(--border); }
+  .meta-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+  .meta-row:last-child { border-bottom: none; }
+  .meta-k { color: var(--muted); }
+  .meta-v { color: var(--text); }
+  .meta-v.red   { color: var(--red); }
+  .meta-v.green { color: var(--green); }
+  .meta-v.amber { color: var(--amber); }
+
+  /* Live features panel */
+  .feat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 14px 16px; }
+  .feat-item { background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; }
+  .feat-name { font-size: 9px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 3px; }
+  .feat-val  { font-size: 14px; font-weight: 700; color: #fff; }
+  .feat-val.danger { color: var(--red); }
+  .feat-val.warn   { color: var(--amber); }
+  .feat-val.ok     { color: var(--green); }
+
+  /* Actions */
+  .actions { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .btn { width: 100%; padding: 10px 13px; border-radius: 8px; border: 1px solid var(--border2); background: transparent; color: var(--text); font-family: var(--mono); font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 9px; transition: background 0.15s, border-color 0.15s, transform 0.1s; }
+  .btn:hover  { background: var(--border); }
+  .btn:active { transform: scale(0.97); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn.green-btn { border-color: rgba(34,197,94,0.35); color: var(--green); }
+  .btn.green-btn:hover { background: var(--green-bg); }
+  .btn-icon { font-size: 14px; flex-shrink: 0; }
+  .divider  { height: 1px; background: var(--border); margin: 2px 0; }
+
+  /* How-to */
+  .howto { font-size: 11px; color: var(--muted); padding: 14px 16px; border-top: 1px solid var(--border); line-height: 1.6; }
+  .howto strong { color: var(--amber); font-weight: 700; }
+
+  /* Alert */
+  .alert-flash { position: fixed; top: 20px; right: 20px; background: var(--red-bg); border: 1px solid rgba(239,68,68,0.5); border-radius: 10px; padding: 12px 18px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--red); font-weight: 700; animation: slideIn 0.25s ease, fadeOut 0.3s ease 2.7s forwards; pointer-events: none; z-index: 999; }
+  @keyframes slideIn { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:none} }
+  @keyframes fadeOut { to{opacity:0;transform:translateX(20px)} }
+
+  /* IP info */
+  #server-ip { font-size: 11px; color: var(--amber); font-weight: 700; font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="shield">
+      <svg viewBox="0 0 24 24"><path d="M12 2L3 7v5c0 5.25 3.75 10.15 9 11.35C17.25 22.15 21 17.25 21 12V7L12 2z"/></svg>
+    </div>
+    <div>
+      <div class="brand-title">NIDS Monitor</div>
+      <div class="brand-sub">XGBoost · NSL-KDD · Real-time feature extraction</div>
+    </div>
+  </div>
+  <div class="live-badge"><div class="pulse"></div>LIVE</div>
+</header>
+
+<div class="stats">
+  <div class="stat"><div class="stat-label">Total Requests</div><div class="stat-value" id="s-total">0</div></div>
+  <div class="stat"><div class="stat-label">Normal</div><div class="stat-value green" id="s-normal">0</div></div>
+  <div class="stat"><div class="stat-label">Attacks Blocked</div><div class="stat-value red" id="s-attacks">0</div></div>
+  <div class="stat"><div class="stat-label">Avg Inference</div><div class="stat-value amber" id="s-ms">—</div></div>
+</div>
+
+<div class="main">
+
+  <!-- Log -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Live Request Log</span>
+      <span class="panel-title" id="log-count" style="color:var(--muted)">0 entries</span>
+    </div>
+    <ul id="log-list">
+      <li class="empty-state">
+        <div class="empty-icon">◈</div>
+        Waiting for connections…
+      </li>
+    </ul>
+  </div>
+
+  <!-- Right -->
+  <div class="right-col">
+
+    <!-- Decision -->
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Last Decision</span></div>
+      <div class="decision-body">
+        <div class="decision-label" id="d-label" style="color:var(--muted)">—</div>
+        <div class="decision-sub" id="d-sub">No request yet</div>
+        <div class="bar-wrap"><div class="bar-fill" id="d-bar" style="width:0%;background:var(--border2)"></div></div>
+        <div class="bar-labels"><span>Confidence</span><span class="bar-pct" id="d-conf">—</span></div>
+        <div class="meta">
+          <div class="meta-row"><span class="meta-k">Source IP</span><span class="meta-v amber" id="d-ip">—</span></div>
+          <div class="meta-row"><span class="meta-k">Attack prob</span><span class="meta-v" id="d-ap">—</span></div>
+          <div class="meta-row"><span class="meta-k">Normal prob</span><span class="meta-v" id="d-np">—</span></div>
+          <div class="meta-row"><span class="meta-k">Inference</span><span class="meta-v"  id="d-ms">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live KDD features -->
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Live KDD Features</span><span class="panel-title" style="color:var(--muted)">real values</span></div>
+      <div class="feat-grid">
+        <div class="feat-item"><div class="feat-name">count (2s window)</div><div class="feat-val" id="f-count">—</div></div>
+        <div class="feat-item"><div class="feat-name">srv_count</div><div class="feat-val" id="f-srv">—</div></div>
+        <div class="feat-item"><div class="feat-name">serror_rate</div><div class="feat-val" id="f-serr">—</div></div>
+        <div class="feat-item"><div class="feat-name">same_srv_rate</div><div class="feat-val" id="f-same">—</div></div>
+        <div class="feat-item"><div class="feat-name">diff_srv_rate</div><div class="feat-val" id="f-diff">—</div></div>
+        <div class="feat-item"><div class="feat-name">src_bytes</div><div class="feat-val" id="f-bytes">—</div></div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Test Actions</span></div>
+      <div class="actions">
+        <button class="btn green-btn" onclick="send('normal')">
+          <span class="btn-icon">▶</span> Normal request
+        </button>
+        <button class="btn green-btn" onclick="send('data')">
+          <span class="btn-icon">◈</span> GET /api/data
+        </button>
+        <div class="divider"></div>
+        <button class="btn" id="flood-btn" onclick="startFlood()" style="border-color:rgba(239,68,68,0.5);color:var(--red);background:rgba(239,68,68,0.05);border-width:1.5px;">
+          <span class="btn-icon">⚡</span> Flood attack (real)
+        </button>
+      </div>
+      <div class="howto">
+        <strong>Real test:</strong> شغّل السيرفر بـ<br>
+        <code style="color:var(--green)">python app.py</code><br>
+        وصّل موبايل أو جهاز ثاني على نفس الـ WiFi على:<br>
+        <span id="server-ip">http://&lt;YOUR-IP&gt;:5000</span><br>
+        كل اتصال يتحلل تلقائياً.
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const BASE = 'http://10.110.116.146:5000';
+let total = 0, normals = 0, attacks = 0, totalMs = 0, msCount = 0;
+let floodInterval = null;
+
+const now = () => new Date().toLocaleTimeString('en-GB');
+
+async function send(type) {
+  let url = BASE + '/', method = 'GET';
+  if (type === 'data') url = BASE + '/api/data';
+
+  try {
+    const res  = await fetch(url, { method });
+    const data = await res.json();
+    render(data.threat, url, method);
+  } catch(e) { console.error(e); }
+}
+
+function startFlood() {
+  const btn = document.getElementById('flood-btn');
+  if (floodInterval) {
+    clearInterval(floodInterval);
+    floodInterval = null;
+    btn.innerHTML = '<span class="btn-icon">⚡</span> Flood attack (real)';
+    btn.style.animation = '';
+    return;
+  }
+  btn.innerHTML = '<span class="btn-icon">⏹</span> Stop flood';
+  btn.style.animation = 'blink 0.6s infinite';
+
+  // Rapid fire requests — count rises in the 2s window → model sees flood
+  let i = 0;
+  floodInterval = setInterval(async () => {
+    try {
+      const res  = await fetch(BASE + '/', { method: 'GET' });
+      const data = await res.json();
+      render(data.threat, BASE + '/', 'GET');
+    } catch(e) {}
+    if (++i >= 120) {        // stop after 120 requests
+      clearInterval(floodInterval);
+      floodInterval = null;
+      btn.innerHTML = '<span class="btn-icon">⚡</span> Flood attack (real)';
+      btn.style.animation = '';
+    }
+  }, 50);   // 50ms apart = 20 req/s → count hits 40+ in 2s window
+}
+
+function render(t, url, method) {
+  if (!t || typeof t !== 'object') return;
+  total++;
+  if (t.is_attack) attacks++; else normals++;
+  totalMs += t.inference_ms || 0;
+  msCount++;
+
+  document.getElementById('s-total').textContent   = total;
+  document.getElementById('s-normal').textContent  = normals;
+  document.getElementById('s-attacks').textContent = attacks;
+  document.getElementById('s-ms').textContent      = msCount ? (totalMs/msCount).toFixed(1) + ' ms' : '—';
+
+  const isAtk = t.is_attack;
+  const lbl   = document.getElementById('d-label');
+  lbl.textContent = isAtk ? '⚠ ATTACK' : '✓ NORMAL';
+  lbl.className   = 'decision-label ' + (isAtk ? 'attack' : 'normal');
+  document.getElementById('d-sub').textContent  = url.replace(BASE,'') || '/';
+  document.getElementById('d-bar').style.width  = t.confidence + '%';
+  document.getElementById('d-bar').style.background = isAtk ? '#ef4444' : '#22c55e';
+  document.getElementById('d-conf').textContent = t.confidence + '%';
+  document.getElementById('d-ip').textContent   = t.source_ip || '—';
+  document.getElementById('d-ap').textContent   = t.attack_prob + '%';
+  document.getElementById('d-np').textContent   = t.normal_prob + '%';
+  document.getElementById('d-ms').textContent   = t.inference_ms + ' ms';
+
+  // Live KDD features
+  const f = t.live_features || {};
+  const setFeat = (id, val, threshHigh, threshMed) => {
+    const el = document.getElementById(id);
+    const v  = typeof val === 'number' ? val : '—';
+    el.textContent = v;
+    el.className   = 'feat-val' + (v >= threshHigh ? ' danger' : v >= threshMed ? ' warn' : ' ok');
+  };
+  setFeat('f-count', f.count,      80, 20);
+  setFeat('f-srv',   f.srv_count,  80, 20);
+  setFeat('f-serr',  f.serror_rate, 0.9, 0.4);
+  setFeat('f-same',  f.same_srv_rate, 2, 2);   // same_srv low = suspicious
+  setFeat('f-diff',  f.diff_srv_rate, 0.9, 0.4);
+  setFeat('f-bytes', f.src_bytes,   10000, 1000);
+
+  addLog(t, url, method, f.count);
+  if (isAtk) showAlert(t);
+}
+
+function addLog(t, url, method, count) {
+  const list  = document.getElementById('log-list');
+  const empty = list.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  const path   = url.replace(BASE,'') || '/';
+  const isAtk  = t.is_attack;
+  const cls    = isAtk ? 'attack' : 'normal';
+  const conf   = t.confidence != null ? t.confidence + '%' : '';
+  const ip     = t.source_ip || '127.0.0.1';
+  const cnt    = count != null ? 'n=' + count : '';
+
+  const li = document.createElement('li');
+  li.className = 'log-item ' + cls;
+  li.innerHTML = `
+    <span class="log-time">${now()}</span>
+    <span class="log-ip">${ip}</span>
+    <span class="log-method">${method}</span>
+    <span class="log-path">${path}</span>
+    <span class="log-count">${cnt}</span>
+    <span class="badge ${cls}"><span class="badge-dot"></span>${isAtk?'ATTACK':'NORMAL'} ${conf}</span>
+  `;
+  list.prepend(li);
+
+  const c = list.querySelectorAll('.log-item').length;
+  document.getElementById('log-count').textContent = c + ' entries';
+  if (c > 80) list.lastElementChild.remove();
+}
+
+function showAlert(t) {
+  const el = document.createElement('div');
+  el.className = 'alert-flash';
+  el.innerHTML = `<span style="font-size:18px">⚡</span> Attack detected from ${t.source_ip} — ${t.confidence}% confidence`;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3100);
+}
+</script>
+</body>
+</html>
