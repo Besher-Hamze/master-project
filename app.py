@@ -7,6 +7,7 @@ import time
 import uuid
 import pickle
 import numpy as np
+import pandas as pd
 import xgboost as xgb
 from datetime import datetime
 from collections import defaultdict, deque
@@ -16,6 +17,21 @@ from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
+
+FEATURE_NAMES = [
+    "duration", "protocol_type", "service", "flag", "src_bytes", "dst_bytes",
+    "land", "wrong_fragment", "urgent", "hot", "num_failed_logins",
+    "logged_in", "num_compromised", "root_shell", "su_attempted",
+    "num_root", "num_file_creations", "num_shells", "num_access_files",
+    "num_outbound_cmds", "is_host_login", "is_guest_login", "count",
+    "srv_count", "serror_rate", "srv_serror_rate", "rerror_rate",
+    "srv_rerror_rate", "same_srv_rate", "diff_srv_rate",
+    "srv_diff_host_rate", "dst_host_count", "dst_host_srv_count",
+    "dst_host_same_srv_rate", "dst_host_diff_srv_rate",
+    "dst_host_same_src_port_rate", "dst_host_srv_diff_host_rate",
+    "dst_host_serror_rate", "dst_host_srv_serror_rate",
+    "dst_host_rerror_rate", "dst_host_srv_rerror_rate",
+]
 
 
 # ─────────────────────────────────────────────
@@ -241,7 +257,10 @@ class Detector:
         X        = tracker.build_feature_vector(
                        ip, path, method, content_len,
                        n_headers, has_auth, has_ua, qs_len)
-        X_scaled = self.scaler.transform(X)
+        # Keep feature names to avoid sklearn warning:
+        # "X does not have valid feature names..."
+        X_df = pd.DataFrame(X, columns=FEATURE_NAMES)
+        X_scaled = self.scaler.transform(X_df)
 
         t0    = time.perf_counter()
         pred  = self.model.predict(X_scaled)[0]
@@ -253,10 +272,12 @@ class Detector:
 
         # Pull the real features that drove the decision
         kdd = tracker.get_kdd_features(ip, path, method, content_len)
+        attack_type = self.estimate_attack_type(kdd) if is_attack else "normal"
 
         return {
             "is_attack":    is_attack,
             "label":        "attack" if is_attack else "normal",
+            "attack_type":  attack_type,
             "confidence":   round(confidence * 100, 1),
             "attack_prob":  round(float(proba[1]) * 100, 1),
             "normal_prob":  round(float(proba[0]) * 100, 1),
@@ -264,6 +285,32 @@ class Detector:
             "source_ip":    ip,
             "live_features": kdd,   # expose real computed features to frontend
         }
+
+    @staticmethod
+    def estimate_attack_type(kdd: dict) -> str:
+        """
+        Estimate attack family using NSL-KDD-style categories.
+        This keeps binary model output, but adds human-readable type.
+        """
+        count = kdd.get("count", 0)
+        serror_rate = kdd.get("serror_rate", 0.0)
+        same_srv_rate = kdd.get("same_srv_rate", 1.0)
+        diff_srv_rate = kdd.get("diff_srv_rate", 0.0)
+
+        # DoS / DDoS pattern: very high request volume + high error rate
+        if count >= 80 and serror_rate >= 0.5:
+            return "DoS/DDoS"
+
+        # Probe pattern: many requests to different services/paths
+        if count >= 30 and diff_srv_rate >= 0.6:
+            return "Probe"
+
+        # R2L pattern proxy: low-volume but suspicious behavior
+        if count < 20 and same_srv_rate < 0.5:
+            return "R2L"
+
+        # U2R pattern proxy: suspicious but not scan/flood-like
+        return "U2R/Unknown"
 
 
 detector = Detector()
@@ -282,6 +329,7 @@ def intrusion_middleware():
     if ip_blocker.is_blocked(ip):
         g.threat = {
             "is_attack": True, "label": "blocked",
+            "attack_type": "blocked-ip",
             "confidence": 100.0, "attack_prob": 100.0,
             "normal_prob": 0.0, "inference_ms": 0.0,
             "source_ip": ip, "blocked_by": "blacklist",
@@ -293,8 +341,8 @@ def intrusion_middleware():
     g.threat = detector.predict_request(request)
 
     # إذا الـ ML اكتشف هجوم، يضيف الـ IP للـ blacklist تلقائياً
-    if g.threat["is_attack"]:
-        ip_blocker.block(ip)
+    # if g.threat["is_attack"]:
+    #     ip_blocker.block(ip)
 
 # ─────────────────────────────────────────────
 #  Routes
@@ -307,6 +355,30 @@ def index():
         "request_id": g.request_id,
         "threat":     g.threat,
     })
+
+@app.route("/<path:any_path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def catch_all(any_path):
+    """
+    Catch unknown paths so demo scenarios (e.g. /login, /scan/*)
+    are inspected by middleware instead of returning noisy 404 logs.
+    """
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    if g.threat["is_attack"]:
+        return jsonify({
+            "error": "Blocked by NIDS",
+            "path": "/" + any_path,
+            "request_id": g.request_id,
+            "threat": g.threat,
+        }), 403
+
+    return jsonify({
+        "message": "Request observed",
+        "path": "/" + any_path,
+        "request_id": g.request_id,
+        "threat": g.threat,
+    }), 200
 
 
 @app.get("/api/data")

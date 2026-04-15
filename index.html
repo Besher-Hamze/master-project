@@ -56,7 +56,7 @@
   /* Log */
   #log-list { list-style: none; max-height: 500px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
   .log-item {
-    display: grid; grid-template-columns: 62px 120px 55px 1fr 55px auto;
+    display: grid; grid-template-columns: 62px 110px 55px 1fr 95px 55px auto;
     gap: 8px; align-items: center;
     padding: 9px 16px; border-bottom: 1px solid var(--border);
     font-size: 12px; animation: fadeSlide 0.2s ease;
@@ -187,6 +187,7 @@
         <div class="bar-labels"><span>Confidence</span><span class="bar-pct" id="d-conf">—</span></div>
         <div class="meta">
           <div class="meta-row"><span class="meta-k">Source IP</span><span class="meta-v amber" id="d-ip">—</span></div>
+          <div class="meta-row"><span class="meta-k">Attack Type</span><span class="meta-v red" id="d-type">—</span></div>
           <div class="meta-row"><span class="meta-k">Attack prob</span><span class="meta-v" id="d-ap">—</span></div>
           <div class="meta-row"><span class="meta-k">Normal prob</span><span class="meta-v" id="d-np">—</span></div>
           <div class="meta-row"><span class="meta-k">Inference</span><span class="meta-v"  id="d-ms">—</span></div>
@@ -221,6 +222,12 @@
         <button class="btn" id="flood-btn" onclick="startFlood()" style="border-color:rgba(239,68,68,0.5);color:var(--red);background:rgba(239,68,68,0.05);border-width:1.5px;">
           <span class="btn-icon">⚡</span> Flood attack (real)
         </button>
+        <button class="btn" onclick="runScenario('probe')" style="border-color:rgba(245,158,11,0.5);color:var(--amber);background:rgba(245,158,11,0.05);">
+          <span class="btn-icon">◉</span> Probe scenario
+        </button>
+        <button class="btn" onclick="runScenario('r2l')" style="border-color:rgba(96,165,250,0.45);color:var(--blue);background:rgba(96,165,250,0.05);">
+          <span class="btn-icon">◎</span> R2L scenario
+        </button>
       </div>
       <div class="howto">
         <strong>Real test:</strong> شغّل السيرفر بـ<br>
@@ -235,7 +242,7 @@
 </div>
 
 <script>
-const BASE = 'http://10.110.116.146:5000';
+const BASE = 'http://10.164.207.146:5000';
 let total = 0, normals = 0, attacks = 0, totalMs = 0, msCount = 0;
 let floodInterval = null;
 
@@ -281,6 +288,47 @@ function startFlood() {
   }, 50);   // 50ms apart = 20 req/s → count hits 40+ in 2s window
 }
 
+async function runScenario(kind) {
+  if (kind === 'probe') {
+    // Many different paths in short time -> high diff_srv_rate
+    const paths = [
+      '/api/status', '/api/data', '/admin', '/login', '/metrics',
+      '/health', '/config', '/users', '/scan/a', '/scan/b',
+      '/scan/c', '/debug', '/backup', '/tmp', '/api/admin/blacklist'
+    ];
+    for (let i = 0; i < 55; i++) {
+      const p = paths[i % paths.length] + '?q=' + i;
+      try {
+        const res = await fetch(BASE + p, { method: 'GET' });
+        const data = await res.json();
+        render(data.threat, BASE + p, 'GET');
+      } catch(e) {}
+      await new Promise(r => setTimeout(r, 35));
+    }
+    return;
+  }
+
+  if (kind === 'r2l') {
+    // Lower-volume suspicious requests with auth-like headers/params
+    for (let i = 0; i < 18; i++) {
+      const p = '/login?user=admin&pass=guess' + i;
+      try {
+        const res = await fetch(BASE + p, {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Basic Z3Vlc3M6Z3Vlc3M=',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ user: 'admin', pass: 'guess' + i })
+        });
+        const data = await res.json();
+        render(data.threat, BASE + p, 'POST');
+      } catch(e) {}
+      await new Promise(r => setTimeout(r, 120));
+    }
+  }
+}
+
 function render(t, url, method) {
   if (!t || typeof t !== 'object') return;
   total++;
@@ -298,6 +346,7 @@ function render(t, url, method) {
   lbl.textContent = isAtk ? '⚠ ATTACK' : '✓ NORMAL';
   lbl.className   = 'decision-label ' + (isAtk ? 'attack' : 'normal');
   document.getElementById('d-sub').textContent  = url.replace(BASE,'') || '/';
+  document.getElementById('d-type').textContent = t.attack_type || (isAtk ? 'unknown' : 'normal');
   document.getElementById('d-bar').style.width  = t.confidence + '%';
   document.getElementById('d-bar').style.background = isAtk ? '#ef4444' : '#22c55e';
   document.getElementById('d-conf').textContent = t.confidence + '%';
@@ -336,6 +385,7 @@ function addLog(t, url, method, count) {
   const conf   = t.confidence != null ? t.confidence + '%' : '';
   const ip     = t.source_ip || '127.0.0.1';
   const cnt    = count != null ? 'n=' + count : '';
+  const atype  = t.attack_type || (isAtk ? 'unknown' : 'normal');
 
   const li = document.createElement('li');
   li.className = 'log-item ' + cls;
@@ -344,6 +394,7 @@ function addLog(t, url, method, count) {
     <span class="log-ip">${ip}</span>
     <span class="log-method">${method}</span>
     <span class="log-path">${path}</span>
+    <span class="log-path">${atype}</span>
     <span class="log-count">${cnt}</span>
     <span class="badge ${cls}"><span class="badge-dot"></span>${isAtk?'ATTACK':'NORMAL'} ${conf}</span>
   `;
@@ -357,7 +408,7 @@ function addLog(t, url, method, count) {
 function showAlert(t) {
   const el = document.createElement('div');
   el.className = 'alert-flash';
-  el.innerHTML = `<span style="font-size:18px">⚡</span> Attack detected from ${t.source_ip} — ${t.confidence}% confidence`;
+  el.innerHTML = `<span style="font-size:18px">⚡</span> ${t.attack_type || 'Attack'} from ${t.source_ip} — ${t.confidence}% confidence`;
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 3100);
 }
