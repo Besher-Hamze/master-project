@@ -12,6 +12,8 @@ from datetime import datetime
 
 # Machine Learning
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     classification_report, confusion_matrix, 
     accuracy_score, precision_score, recall_score, f1_score,
@@ -59,7 +61,22 @@ class Config:
         'tree_method': 'hist',
         'random_state': 42,
         'n_jobs': -1,
-        'verbosity': 1
+        'verbosity': 0
+    }
+    
+    # Decision Tree hyperparameters
+    DT_PARAMS = {
+        'max_depth': 15,
+        'min_samples_split': 5,
+        'random_state': 42
+    }
+    
+    # Random Forest hyperparameters
+    RF_PARAMS = {
+        'n_estimators': 100,
+        'max_depth': 15,
+        'random_state': 42,
+        'n_jobs': -1
     }
     
     # For multi-class classification
@@ -279,41 +296,28 @@ def preprocess_data(train_df, test_df, binary_classification=True):
 # MODEL TRAINING
 # ============================================================================
 
-def train_model(X_train, y_train, X_test, y_test, binary_classification=True):
-    """Train XGBoost model"""
-    print_step(3, "Training XGBoost Model")
+def train_model(model_type, X_train, y_train, X_test, y_test, binary_classification=True):
+    """Train selected model type"""
+    print_step(3, f"Training {model_type} Model")
     
-    # Select parameters
-    if binary_classification:
-        params = Config.XGBOOST_PARAMS.copy()
-        print("📝 Training binary classification model")
-    else:
-        params = Config.XGBOOST_PARAMS_MULTICLASS.copy()
-        print("📝 Training multi-class classification model")
-    
-    print(f"\n⚙️  Model Parameters:")
-    for key, value in params.items():
-        print(f"   {key}: {value}")
-    
-    # Create model
-    print("\n🏗️  Building model...")
-    if binary_classification:
+    if model_type == 'XGBoost':
+        params = Config.XGBOOST_PARAMS.copy() if binary_classification else Config.XGBOOST_PARAMS_MULTICLASS.copy()
         model = xgb.XGBClassifier(**params)
+        print(f"🏋️  Training XGBoost...")
+        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+        
+    elif model_type == 'Decision Tree':
+        model = DecisionTreeClassifier(**Config.DT_PARAMS)
+        print(f"🏋️  Training Decision Tree...")
+        model.fit(X_train, y_train)
+        
+    elif model_type == 'Random Forest':
+        model = RandomForestClassifier(**Config.RF_PARAMS)
+        print(f"🏋️  Training Random Forest...")
+        model.fit(X_train, y_train)
+        
     else:
-        model = xgb.XGBClassifier(**params)
-    
-    # Train model with evaluation
-    print("\n🏋️  Training started...")
-    start_time = time.time()
-    
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_train, y_train), (X_test, y_test)],
-        verbose=True
-    )
-    
-    training_time = time.time() - start_time
-    print(f"\n✓ Training completed in {training_time:.2f} seconds ({training_time/60:.2f} minutes)")
+        raise ValueError(f"Unknown model type: {model_type}")
     
     return model
 
@@ -460,10 +464,49 @@ def plot_results(model, X_test, y_test, y_test_pred, metrics, binary_classificat
     plt.tight_layout()
     
     # Save figure
-    results_path = os.path.join(Config.RESULTS_DIR, 'xgboost_results.png')
+    results_path = os.path.join(Config.RESULTS_DIR, f'{model.name if hasattr(model, "name") else "model"}_results.png')
     plt.savefig(results_path, dpi=300, bbox_inches='tight')
-    print(f"✓ Results saved to {results_path}")
+    plt.close()
+
+
+def plot_comparison(all_metrics):
+    """Create a comparison plot for all models"""
+    print_step(5.1, "Creating Model Comparison Plots")
     
+    model_names = list(all_metrics.keys())
+    metrics_to_compare = ['test_accuracy', 'test_precision', 'test_recall', 'test_f1']
+    metric_labels = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+    
+    fig, axes = plt.subplots(1, 1, figsize=(12, 7))
+    
+    # Prepare data for plotting
+    x = np.arange(len(metric_labels))
+    width = 0.25
+    
+    for i, name in enumerate(model_names):
+        values = [all_metrics[name][m] for m in metrics_to_compare]
+        axes.bar(x + (i - 1) * width, values, width, label=name)
+    
+    axes.set_ylabel('Scores')
+    axes.set_title('Model Performance Comparison', fontsize=16, fontweight='bold')
+    axes.set_xticks(x)
+    axes.set_xticklabels(metric_labels)
+    axes.legend()
+    axes.grid(axis='y', linestyle='--', alpha=0.7)
+    
+    # Add values on top of bars
+    for p in axes.patches:
+        axes.annotate(f'{p.get_height():.3f}', 
+                     (p.get_x() + p.get_width() / 2., p.get_height()), 
+                     ha='center', va='center', 
+                     xytext=(0, 9), 
+                     textcoords='offset points',
+                     fontsize=9)
+
+    plt.tight_layout()
+    comparison_path = os.path.join(Config.RESULTS_DIR, 'model_comparison.png')
+    plt.savefig(comparison_path, dpi=300)
+    print(f"✓ Comparison plot saved to {comparison_path}")
     plt.close()
 
 
@@ -575,7 +618,7 @@ def test_inference(model):
 def main(binary_classification=True):
     """Main execution pipeline"""
     
-    print_header("🛡️  Network Intrusion Detection System - XGBoost Training")
+    print_header("🛡️  Network Intrusion Detection System - Model Comparison")
     print(f"📅 Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"🎯 Mode: {'Binary Classification' if binary_classification else 'Multi-class Classification'}")
     
@@ -590,41 +633,50 @@ def main(binary_classification=True):
         train_df, test_df, binary_classification
     )
     
-    # Step 3: Train model
-    model = train_model(X_train, y_train, X_test, y_test, binary_classification)
+    # Models to compare
+    model_types = ['XGBoost', 'Decision Tree', 'Random Forest']
+    all_metrics = {}
+    best_model = None
+    best_f1 = 0
     
-    # Step 4: Evaluate model
-    metrics, y_test_pred = evaluate_model(
-        model, X_train, y_train, X_test, y_test, binary_classification
-    )
+    for model_type in model_types:
+        # Step 3: Train model
+        model = train_model(model_type, X_train, y_train, X_test, y_test, binary_classification)
+        
+        # Step 4: Evaluate model
+        metrics, y_test_pred = evaluate_model(
+            model, X_train, y_train, X_test, y_test, binary_classification
+        )
+        all_metrics[model_type] = metrics
+        
+        # Step 5: Plot results for this model
+        model.name = model_type.lower().replace(" ", "_")
+        plot_results(model, X_test, y_test, y_test_pred, metrics, binary_classification)
+        
+        # Track best model based on F1-score
+        if metrics['test_f1'] > best_f1:
+            best_f1 = metrics['test_f1']
+            best_model = model
+            best_model_name = model_type
+
+    # Step 5.1: Plot comparison
+    plot_comparison(all_metrics)
     
-    # Step 5: Plot results
-    plot_results(model, X_test, y_test, y_test_pred, metrics, binary_classification)
+    # Step 6: Save the best model
+    print_step(6, f"Saving Best Model ({best_model_name})")
+    save_model(best_model)
     
-    # Step 6: Save model
-    save_model(model)
-    
-    # Step 7: Test inference
-    test_inference(model)
+    # Step 7: Test inference with best model
+    test_inference(best_model)
     
     # Final summary
-    print_header("✅ Training Complete!")
-    print(f"📊 Final Results:")
-    print(f"   Test Accuracy:  {metrics['test_accuracy']*100:.2f}%")
-    print(f"   Test Precision: {metrics['test_precision']*100:.2f}%")
-    print(f"   Test Recall:    {metrics['test_recall']*100:.2f}%")
-    print(f"   Test F1-Score:  {metrics['test_f1']*100:.2f}%")
+    print_header("✅ Comparison Complete!")
+    print(f"{'Model':<15} | {'Accuracy':<10} | {'Precision':<10} | {'Recall':<10} | {'F1-Score':<10}")
+    print("-" * 65)
+    for name, m in all_metrics.items():
+        print(f"{name:<15} | {m['test_accuracy']*100:>8.2f}% | {m['test_precision']*100:>8.2f}% | {m['test_recall']*100:>8.2f}% | {m['test_f1']*100:>8.2f}%")
     
-    if binary_classification:
-        print(f"   ROC-AUC:        {metrics['test_auc']*100:.2f}%")
-    
-    print(f"\n📁 Saved Files:")
-    print(f"   Model: {Config.MODEL_DIR}{Config.MODEL_FILE}")
-    print(f"   Scaler: {Config.MODEL_DIR}{Config.SCALER_FILE}")
-    print(f"   Encoders: {Config.MODEL_DIR}{Config.ENCODERS_FILE}")
-    print(f"   Results: {Config.RESULTS_DIR}xgboost_results.png")
-    
-    print(f"\n✅ Model training complete!")
+    print(f"\n🏆 Best Model: {best_model_name} (F1: {best_f1*100:.2f}%)")
     print(f"📅 Finished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*80 + "\n")
 
