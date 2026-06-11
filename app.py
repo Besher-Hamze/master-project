@@ -18,6 +18,9 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
+# Attack only when enough traffic in the 2s window (flood), not on 2nd click.
+MIN_REQUESTS_FOR_ATTACK = 8
+
 FEATURE_NAMES = [
     "duration", "protocol_type", "service", "flag", "src_bytes", "dst_bytes",
     "land", "wrong_fragment", "urgent", "hot", "num_failed_logins",
@@ -81,8 +84,8 @@ class ConnectionTracker:
         src_bytes  = content_len
         dst_bytes  = 0                                   # unknown at request time
 
-        # error rate proxy: repeated rapid short requests (flood pattern)
-        serror_rate     = 1.0 if count > 100 else 0.0
+        # Same thresholds as build_feature_vector (must stay in sync)
+        serror_rate     = 1.0 if count > 80 else (0.5 if count > 40 else 0.0)
         srv_serror_rate = serror_rate
 
         same_srv_rate   = (srv_count / count) if count else 1.0
@@ -128,11 +131,13 @@ class ConnectionTracker:
             dq = self._log[ip]
             window = [(ts, p, m, cl) for ts, p, m, cl, _ in dq if ts >= cutoff]
 
-        count     = max(len(window), 1)
-        srv_count = max(sum(1 for _, p, _, _ in window if p == path), 1)
+        count_raw   = len(window)
+        count       = max(count_raw, 1)
+        srv_count   = sum(1 for _, p, _, _ in window if p == path)
+        srv_count_f = max(srv_count, 1)  # for model features only
 
-        serror_rate  = 1.0 if count > 80 else (0.5 if count > 40 else 0.0)
-        same_srv     = srv_count / count
+        serror_rate  = 1.0 if count_raw > 80 else (0.5 if count_raw > 40 else 0.0)
+        same_srv     = (srv_count / count_raw) if count_raw else 1.0
         diff_srv     = 1.0 - same_srv
 
         method_map  = {"GET": 0, "POST": 1, "PUT": 2, "DELETE": 3, "PATCH": 4}
@@ -144,8 +149,8 @@ class ConnectionTracker:
         except Exception:
             octets = [127, 0, 0, 1]
 
-        dst_count = min(count * 2, 255)
-        dst_srv   = min(srv_count * 2, 255)
+        dst_count = min(max(count_raw, 1) * 2, 255)
+        dst_srv   = min(max(srv_count, 1) * 2, 255)
         path_depth = path.count("/")
 
         features = [
@@ -171,8 +176,8 @@ class ConnectionTracker:
             0,                    # num_outbound_cmds
             0,                    # is_host_login
             0,                    # is_guest_login
-            count,                # count          ← REAL: requests in 2s
-            srv_count,            # srv_count      ← REAL: same-path requests
+            count_raw if count_raw else 1,  # count in 2s window
+            srv_count_f,            # same-path requests in window
             serror_rate,          # serror_rate    ← REAL: flood proxy
             serror_rate,          # srv_serror_rate
             0.0,                  # rerror_rate
@@ -267,15 +272,22 @@ class Detector:
         proba = self.model.predict_proba(X_scaled)[0]
         ms    = round((time.perf_counter() - t0) * 1000, 2)
 
-        is_attack  = bool(pred)
-        confidence = float(proba[int(pred)])
-
-        # Pull the real features that drove the decision
+        is_attack_ml = bool(pred)
         kdd = tracker.get_kdd_features(ip, path, method, content_len)
+        req_count = kdd["count"]
+        serror = kdd["serror_rate"]
+
+        # Gate: low traffic (e.g. 2nd request to another path) stays normal.
+        # Real flood raises count in 2s window → then ML verdict applies.
+        is_attack = is_attack_ml and (
+            req_count >= MIN_REQUESTS_FOR_ATTACK or serror >= 0.5
+        )
+        confidence = float(proba[1] if is_attack else proba[0])
         attack_type = self.estimate_attack_type(kdd) if is_attack else "normal"
 
         return {
             "is_attack":    is_attack,
+            "is_attack_ml": is_attack_ml,
             "label":        "attack" if is_attack else "normal",
             "attack_type":  attack_type,
             "confidence":   round(confidence * 100, 1),
@@ -283,7 +295,8 @@ class Detector:
             "normal_prob":  round(float(proba[0]) * 100, 1),
             "inference_ms": ms,
             "source_ip":    ip,
-            "live_features": kdd,   # expose real computed features to frontend
+            "live_features": kdd,
+            "min_requests_for_attack": MIN_REQUESTS_FOR_ATTACK,
         }
 
     @staticmethod
