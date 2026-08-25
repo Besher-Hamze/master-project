@@ -1,6 +1,7 @@
 """
 Complete Network Intrusion Detection System using XGBoost
-All-in-one script: Data preprocessing, training, evaluation, and model saving
+Legacy training script — for the full IEEE Access pipeline use:
+  python train_pipeline.py --dataset all --ablation --shap
 """
 
 import pandas as pd
